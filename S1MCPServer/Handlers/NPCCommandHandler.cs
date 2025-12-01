@@ -319,6 +319,15 @@ public class NPCCommandHandler : ICommandHandler
                         Z = Convert.ToSingle(posDict.GetValueOrDefault("z", 0.0f))
                     };
                 }
+                else if (positionObj is System.Text.Json.JsonElement jsonElement && jsonElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    position = new Position
+                    {
+                        X = jsonElement.TryGetProperty("x", out var xProp) ? (float)xProp.GetDouble() : 0.0f,
+                        Y = jsonElement.TryGetProperty("y", out var yProp) ? (float)yProp.GetDouble() : 0.0f,
+                        Z = jsonElement.TryGetProperty("z", out var zProp) ? (float)zProp.GetDouble() : 0.0f
+                    };
+                }
             }
             catch
             {
