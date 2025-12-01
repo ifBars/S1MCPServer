@@ -40,7 +40,7 @@ class TcpClient:
         
         self._socket: Optional[socket.socket] = None
         self._connected = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Use reentrant lock to allow nested calls
         self._request_id_counter = 0
         self._request_id_lock = threading.Lock()
         self._heartbeat_thread: Optional[threading.Thread] = None
@@ -433,17 +433,31 @@ class TcpClient:
                     self.logger.debug("Heartbeat: Not connected, skipping heartbeat")
                     continue
                 
+                # Check if lock is held (tool call in progress) - if so, skip this heartbeat
+                # We can't use acquire(timeout) on a regular Lock to check without blocking
+                # Instead, we'll just try the heartbeat and let it fail gracefully if lock is held
                 try:
-                    # Send heartbeat request
+                    # Send heartbeat request - use call_with_retry with minimal retries
+                    # If a tool call is in progress, this will wait briefly then fail gracefully
                     self.logger.debug("Sending heartbeat to server...")
-                    response = self.call("heartbeat", {})
-                    
-                    if response.error:
-                        self.logger.debug(f"Heartbeat error: {response.error.message}")
-                    else:
-                        self.logger.debug("Heartbeat sent successfully")
+                    try:
+                        # Use call_with_retry with 1 retry max and shorter timeout
+                        # This will fail quickly if lock is held or connection is bad
+                        response = self.call_with_retry("heartbeat", {}, max_retries=1)
+                        
+                        if response.error:
+                            self.logger.debug(f"Heartbeat error: {response.error.message}")
+                        else:
+                            self.logger.debug("Heartbeat sent successfully")
+                    except TcpConnectionError as e:
+                        self.logger.debug(f"Heartbeat connection error (will retry next interval): {e}")
+                        # Connection lost, but don't break loop - it might recover
+                    except Exception as e:
+                        # This might include lock timeout or other issues - just log and continue
+                        self.logger.debug(f"Error sending heartbeat (will retry next interval): {e}")
+                        # Don't break the loop - connection might recover
                 except Exception as e:
-                    self.logger.debug(f"Error sending heartbeat: {e}")
+                    self.logger.debug(f"Error in heartbeat send attempt: {e}")
                     # Don't break the loop - connection might recover
                     
             except Exception as e:

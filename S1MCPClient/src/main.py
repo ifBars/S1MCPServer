@@ -3,8 +3,9 @@
 import asyncio
 import sys
 from mcp.server import Server
+from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool
+from mcp.types import Tool, ServerCapabilities, ToolsCapability
 
 from .tcp_client import TcpClient, TcpConnectionError
 from .utils.config import Config
@@ -22,6 +23,8 @@ from .tools import debug_tools
 
 # Global TCP client instance
 tcp_client: TcpClient | None = None
+# Store instructions from handshake
+server_instructions: str | None = None
 logger = get_logger()
 
 
@@ -43,37 +46,77 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
     all_tool_handlers: dict[str, callable] = {}
     
     # NPC tools
-    all_tools.extend(npc_tools.get_npc_tools(tcp_client))
-    all_tool_handlers.update(npc_tools.TOOL_HANDLERS)
+    try:
+        tools = npc_tools.get_npc_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(npc_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} NPC tools")
+    except Exception as e:
+        logger.error(f"Error loading NPC tools: {e}", exc_info=True)
     
     # Player tools
-    all_tools.extend(player_tools.get_player_tools(tcp_client))
-    all_tool_handlers.update(player_tools.TOOL_HANDLERS)
+    try:
+        tools = player_tools.get_player_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(player_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} player tools")
+    except Exception as e:
+        logger.error(f"Error loading player tools: {e}", exc_info=True)
     
     # Item tools
-    all_tools.extend(item_tools.get_item_tools(tcp_client))
-    all_tool_handlers.update(item_tools.TOOL_HANDLERS)
+    try:
+        tools = item_tools.get_item_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(item_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} item tools")
+    except Exception as e:
+        logger.error(f"Error loading item tools: {e}", exc_info=True)
     
     # Property tools
-    all_tools.extend(property_tools.get_property_tools(tcp_client))
-    all_tool_handlers.update(property_tools.TOOL_HANDLERS)
+    try:
+        tools = property_tools.get_property_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(property_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} property tools")
+    except Exception as e:
+        logger.error(f"Error loading property tools: {e}", exc_info=True)
     
     # Vehicle tools
-    all_tools.extend(vehicle_tools.get_vehicle_tools(tcp_client))
-    all_tool_handlers.update(vehicle_tools.TOOL_HANDLERS)
+    try:
+        tools = vehicle_tools.get_vehicle_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(vehicle_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} vehicle tools")
+    except Exception as e:
+        logger.error(f"Error loading vehicle tools: {e}", exc_info=True)
     
     # Game state tools
-    all_tools.extend(game_state_tools.get_game_state_tools(tcp_client))
-    all_tool_handlers.update(game_state_tools.TOOL_HANDLERS)
+    try:
+        tools = game_state_tools.get_game_state_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(game_state_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} game state tools")
+    except Exception as e:
+        logger.error(f"Error loading game state tools: {e}", exc_info=True)
     
     # Debug tools
-    all_tools.extend(debug_tools.get_debug_tools(tcp_client))
-    all_tool_handlers.update(debug_tools.TOOL_HANDLERS)
+    try:
+        tools = debug_tools.get_debug_tools(tcp_client)
+        all_tools.extend(tools)
+        all_tool_handlers.update(debug_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} debug tools")
+    except Exception as e:
+        logger.error(f"Error loading debug tools: {e}", exc_info=True)
+    
+    # Log tool collection
+    logger.info(f"Collected {len(all_tools)} tools: {[tool.name for tool in all_tools]}")
+    logger.info(f"Collected {len(all_tool_handlers)} tool handlers: {list(all_tool_handlers.keys())}")
     
     # Register list_tools handler
     @server.list_tools()
     async def handle_list_tools() -> list[Tool]:
         """List all available tools."""
+        logger.debug(f"list_tools called, returning {len(all_tools)} tools")
         return all_tools
     
     # Register call_tool handler
@@ -89,12 +132,17 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
         Returns:
             Tool result
         """
+        from mcp.types import TextContent
+        
         logger.debug(f"Tool call received: {name} with arguments: {arguments}")
         
         if name not in all_tool_handlers:
             logger.error(f"Unknown tool: {name}")
             logger.debug(f"Available tools: {list(all_tool_handlers.keys())}")
-            raise ValueError(f"Unknown tool: {name}")
+            return [TextContent(
+                type="text",
+                text=f"Error: Unknown tool '{name}'. Available tools: {', '.join(all_tool_handlers.keys())}"
+            )]
         
         handler = all_tool_handlers[name]
         logger.debug(f"Found handler for {name}, invoking...")
@@ -103,9 +151,19 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
             result = await handler(arguments, tcp_client)
             logger.debug(f"Tool {name} completed successfully, result type: {type(result)}")
             return result
+        except TcpConnectionError as e:
+            logger.error(f"Connection error in tool handler {name}: {e}", exc_info=True)
+            return [TextContent(
+                type="text",
+                text=f"Error: Connection failed - {str(e)}. Please ensure the game is running with the mod loaded."
+            )]
         except Exception as e:
             logger.error(f"Error in tool handler {name}: {e}", exc_info=True)
-            raise
+            # Return error as TextContent instead of raising to prevent TaskGroup errors
+            return [TextContent(
+                type="text",
+                text=f"Error executing tool '{name}': {str(e)}"
+            )]
     
     return server
 
@@ -118,6 +176,7 @@ async def main():
     import atexit
     import os
     import tempfile
+    import platform
     
     pid_file = os.path.join(tempfile.gettempdir(), "s1mcpclient.pid")
     if os.path.exists(pid_file):
@@ -125,18 +184,40 @@ async def main():
             with open(pid_file, 'r') as f:
                 old_pid = int(f.read().strip())
             # Check if the process is still running
+            # On Windows, os.kill() doesn't support signal 0, so we use a different approach
+            process_exists = False
             try:
-                os.kill(old_pid, 0)  # Signal 0 just checks if process exists
+                if platform.system() == "Windows":
+                    # On Windows, try to open the process to check if it exists
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(0x1000, False, old_pid)  # PROCESS_QUERY_INFORMATION
+                    if handle and handle != 0:
+                        kernel32.CloseHandle(handle)
+                        process_exists = True
+                    # If handle is 0, the process doesn't exist or we don't have permission
+                else:
+                    # On Unix, use signal 0
+                    os.kill(old_pid, 0)
+                    process_exists = True
+            except (OSError, ProcessLookupError, ValueError, AttributeError):
+                # Process doesn't exist or error accessing it
+                process_exists = False
+            
+            if process_exists:
                 logger.warning(f"Another instance appears to be running (PID: {old_pid}). Continuing anyway...")
-            except (OSError, ProcessLookupError):
+            else:
                 # Process doesn't exist, remove stale PID file
-                os.remove(pid_file)
-        except (ValueError, IOError):
+                try:
+                    os.remove(pid_file)
+                except OSError:
+                    pass  # Ignore errors removing stale PID file
+        except (ValueError, IOError, OSError):
             # Invalid PID file, remove it
             try:
                 os.remove(pid_file)
-            except:
-                pass
+            except OSError:
+                pass  # Ignore errors removing invalid PID file
     
     # Write our PID
     try:
@@ -147,8 +228,8 @@ async def main():
             try:
                 if os.path.exists(pid_file):
                     os.remove(pid_file)
-            except:
-                pass
+            except OSError:
+                pass  # Ignore errors during cleanup
         
         atexit.register(cleanup_pid)
     except Exception as e:
@@ -191,6 +272,14 @@ async def main():
                         server_name = handshake_data.get("server_name", "Unknown")
                         version = handshake_data.get("version", "Unknown")
                         
+                        # Extract instructions for LLM prompt
+                        global server_instructions
+                        server_instructions = handshake_data.get("instructions")
+                        if server_instructions:
+                            logger.debug("Received server instructions for LLM prompt")
+                        else:
+                            logger.debug("No instructions provided in handshake")
+                        
                         logger.info(f"Handshake successful: {server_name} v{version}")
                         logger.info(f"Available methods: {total_methods}")
                         logger.debug(f"Methods: {', '.join(available_methods)}")
@@ -232,15 +321,31 @@ async def main():
     try:
         logger.info("Starting MCP server with stdio transport...")
         async with stdio_server() as (read_stream, write_stream):
+            # Create initialization options with tools capability enabled
+            # Use instructions from handshake if available
+            init_options = InitializationOptions(
+                server_name="s1mcpclient",
+                server_version="0.1.0",
+                capabilities=ServerCapabilities(
+                    tools=ToolsCapability()
+                ),
+                instructions=server_instructions
+            )
+            if server_instructions:
+                logger.info("Using server-provided instructions for LLM prompt")
+            else:
+                logger.debug("No server instructions available, using default")
             await server.run(
                 read_stream,
-                write_stream
+                write_stream,
+                init_options
             )
     except KeyboardInterrupt:
         logger.info("Received interrupt signal, shutting down...")
     except Exception as e:
-        logger.error(f"Server error: {e}")
-        sys.exit(1)
+        logger.error(f"Server error: {e}", exc_info=True)
+        # Don't exit immediately - let finally block clean up
+        raise
     finally:
         # Cleanup
         if tcp_client:
@@ -256,10 +361,24 @@ def entry_point():
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        try:
+            logger.info("Interrupted by user")
+        except:
+            pass  # Logger might not be initialized
         sys.exit(0)
+    except OSError as e:
+        try:
+            logger.error(f"Fatal OS error: {type(e).__name__}: {e}", exc_info=True)
+        except:
+            print(f"Fatal OS error: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        try:
+            logger.error(f"Fatal error: {type(e).__name__}: {e}", exc_info=True)
+        except:
+            print(f"Fatal error: {type(e).__name__}: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
 
 

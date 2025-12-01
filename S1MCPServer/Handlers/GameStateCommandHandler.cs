@@ -81,14 +81,14 @@ public class GameStateCommandHandler : ICommandHandler
                 .ToList();
 
             // Get game version (from BuildInfo)
-            string gameVersion = MelonEnvironment.;
+            //string gameVersion = MelonEnvironment.;
 
             var result = new Dictionary<string, object>
             {
                 ["scene_name"] = sceneName,
                 ["game_time"] = 0, // TODO: Get actual game time if available
                 ["network_status"] = networkStatus,
-                ["game_version"] = gameVersion,
+                //["game_version"] = gameVioners,
                 ["loaded_mods"] = loadedMods
             };
 
