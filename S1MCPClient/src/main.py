@@ -5,7 +5,7 @@ import sys
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, ServerCapabilities, ToolsCapability
+from mcp.types import Tool, ServerCapabilities, ToolsCapability, Prompt
 
 from .tcp_client import TcpClient, TcpConnectionError
 from .utils.config import Config
@@ -118,6 +118,15 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
         """List all available tools."""
         logger.debug(f"list_tools called, returning {len(all_tools)} tools")
         return all_tools
+    
+    # Register list_prompts handler (if we want to expose prompts)
+    # For now, instructions are passed via InitializationOptions which provides context to the LLM
+    # Prompts would be a separate interactive feature
+    @server.list_prompts()
+    async def handle_list_prompts() -> list[Prompt]:
+        """List available prompts."""
+        # Currently no prompts - instructions are passed via InitializationOptions
+        return []
     
     # Register call_tool handler
     @server.call_tool()
@@ -276,9 +285,10 @@ async def main():
                         global server_instructions
                         server_instructions = handshake_data.get("instructions")
                         if server_instructions:
-                            logger.debug("Received server instructions for LLM prompt")
+                            logger.info(f"Received server instructions for LLM prompt ({len(server_instructions)} characters)")
+                            logger.debug(f"Instructions preview: {server_instructions[:200]}...")
                         else:
-                            logger.debug("No instructions provided in handshake")
+                            logger.warning("No instructions provided in handshake response")
                         
                         logger.info(f"Handshake successful: {server_name} v{version}")
                         logger.info(f"Available methods: {total_methods}")
@@ -323,6 +333,9 @@ async def main():
         async with stdio_server() as (read_stream, write_stream):
             # Create initialization options with tools capability enabled
             # Use instructions from handshake if available
+            logger.info(f"Creating InitializationOptions with instructions: {server_instructions is not None}")
+            if server_instructions:
+                logger.info(f"Instructions length: {len(server_instructions)} characters")
             init_options = InitializationOptions(
                 server_name="s1mcpclient",
                 server_version="0.1.0",
@@ -332,9 +345,9 @@ async def main():
                 instructions=server_instructions
             )
             if server_instructions:
-                logger.info("Using server-provided instructions for LLM prompt")
+                logger.info(f"InitializationOptions created with server-provided instructions ({len(server_instructions)} chars)")
             else:
-                logger.debug("No server instructions available, using default")
+                logger.warning("InitializationOptions created WITHOUT instructions - handshake may not have completed")
             await server.run(
                 read_stream,
                 write_stream,
