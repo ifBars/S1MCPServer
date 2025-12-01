@@ -1,0 +1,30 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{05A8ACF6-A898-4B26-ACD6-1733331B48E4}") = "S1MCPServer", "S1MCPServer.csproj", "{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug IL2CPP|Any CPU = Debug IL2CPP|Any CPU
+		Debug Mono|Any CPU = Debug Mono|Any CPU
+		Release IL2CPP|Any CPU = Release IL2CPP|Any CPU
+		Release Mono|Any CPU = Release Mono|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Debug IL2CPP|Any CPU.ActiveCfg = Debug IL2CPP|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Debug IL2CPP|Any CPU.Build.0 = Debug IL2CPP|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Debug Mono|Any CPU.ActiveCfg = Debug Mono|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Debug Mono|Any CPU.Build.0 = Debug Mono|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Release IL2CPP|Any CPU.ActiveCfg = Release IL2CPP|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Release IL2CPP|Any CPU.Build.0 = Release IL2CPP|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Release Mono|Any CPU.ActiveCfg = Release Mono|Any CPU
+		{879BF2BB-96D8-4FDB-9A6A-20641C90BD6F}.Release Mono|Any CPU.Build.0 = Release Mono|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {34B6E36F-B232-4C14-BB9D-4EF9079E1508}
+	EndGlobalSection
+EndGlobal

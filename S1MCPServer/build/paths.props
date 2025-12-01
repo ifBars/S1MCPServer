@@ -1,0 +1,9 @@
+﻿<Project>
+    <PropertyGroup>
+        <!-- Paths and conditions -->
+        <S1MonoDir>C:\Program Files (x86)\Steam\steamapps\common\Schedule I\MelonLoader</S1MonoDir>
+        <S1CPPDir>D:\Schedule 1 Modding\Dev Env\tests\branches\main-branch\manifest_7290691196745256540</S1CPPDir>
+        <CommonDir>D:\Schedule 1 Modding\TestAssemblies</CommonDir>
+        <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>
+    </PropertyGroup>
+</Project>
