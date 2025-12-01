@@ -108,7 +108,24 @@ def get_npc_tools(tcp_client: TcpClient) -> list[Tool]:
         ),
         Tool(
             name="s1_inspect_npc_dealer",
-            description="Inspect an NPC's dealer component and home building. Useful for debugging dealer home assignment issues.",
+            description="""Inspect an NPC's dealer component to debug dealer-specific issues. This is a specialized diagnostic tool for dealer NPCs.
+
+**What this tool checks:**
+- Whether the NPC has a Dealer component
+- Home building assignment status
+- Home building resolution (whether the building name was found)
+
+**Common issues diagnosed:**
+- ❌ Dealer not moving → Usually means 'home_building_resolved' is false
+- ❌ Home is null → Dealer has no home building assigned
+- ✅ Home assigned → Check NPCMovement component for other movement issues
+
+**Next steps after inspection:**
+- If home_building_resolved is false: Check that the building name exists (use s1_list_properties)
+- If has_dealer_component is false: This NPC isn't configured as a dealer
+- If everything looks good: Use s1_inspect_component with 'NPCMovement' to debug movement
+
+**TIP:** For generic component debugging, use s1_list_components + s1_inspect_component instead. This tool is specifically optimized for dealer home issues.""",
             inputSchema={
                 "type": "object",
                 "properties": {
