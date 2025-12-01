@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -7,6 +8,15 @@ using S1MCPServer.Integrations;
 using S1MCPServer.Models;
 using S1MCPServer.Utils;
 using UnityEngine;
+#if MONO
+using ScheduleOne;
+using S1NPC = ScheduleOne.NPCs.NPC;
+using S1NPCManager = ScheduleOne.NPCs.NPCManager;
+#else
+using Il2CppScheduleOne;
+using S1NPC = Il2CppScheduleOne.NPCs.NPC;
+using S1NPCManager = Il2CppScheduleOne.NPCs.NPCManager;
+#endif
 
 namespace S1MCPServer.Handlers;
 
@@ -37,6 +47,15 @@ public class DebugCommandHandler : ICommandHandler
                 break;
             case "get_scene_objects":
                 HandleGetSceneObjects(request);
+                break;
+            case "inspect_component":
+                HandleInspectComponent(request);
+                break;
+            case "get_component_by_type":
+                HandleGetComponentByType(request);
+                break;
+            case "get_member_value":
+                HandleGetMemberValue(request);
                 break;
             default:
                 var errorResponse = ProtocolHandler.CreateErrorResponse(
@@ -136,19 +155,66 @@ public class DebugCommandHandler : ICommandHandler
         result["scale"] = new { x = transform.localScale.x, y = transform.localScale.y, z = transform.localScale.z };
 
         // Get all components with enhanced reflection
+        // Unity components can be Component or MonoBehaviour, so we need to get both
         var components = new List<Dictionary<string, object>>();
-        var allComponents = gameObject.GetComponents<Component>();
+        var componentSet = new HashSet<Component>(); // Use HashSet to avoid duplicates
         
-        foreach (var component in allComponents)
+        try
+        {
+            // Get all Component types (includes Transform, etc.)
+            var allComponents = gameObject.GetComponents<Component>();
+            foreach (var component in allComponents)
+            {
+                if (component != null)
+                    componentSet.Add(component);
+            }
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Debug($"Error getting Component types: {ex.Message}");
+        }
+
+        try
+        {
+            // Also get MonoBehaviour components (custom game components)
+            var monoBehaviours = gameObject.GetComponents<MonoBehaviour>();
+            foreach (var mb in monoBehaviours)
+            {
+                if (mb != null)
+                    componentSet.Add(mb);
+            }
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Debug($"Error getting MonoBehaviour types: {ex.Message}");
+        }
+
+        // Inspect all unique components
+        foreach (var component in componentSet)
         {
             if (component == null) continue;
 
-            var componentData = InspectComponent(component);
-            components.Add(componentData);
+            try
+            {
+                var componentData = InspectComponent(component);
+                components.Add(componentData);
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Debug($"Error inspecting component {component.GetType().Name}: {ex.Message}");
+                // Add error info instead
+                components.Add(new Dictionary<string, object>
+                {
+                    ["type"] = component.GetType().Name,
+                    ["full_type"] = component.GetType().FullName ?? "Unknown",
+                    ["error"] = ex.Message
+                });
+            }
         }
 
         result["components"] = components;
         result["component_count"] = components.Count;
+        result["component_types"] = components.Select(c => c.ContainsKey("type") ? c["type"]?.ToString() : "Unknown").ToList();
 
         // Get hierarchy with full paths
         var hierarchy = new List<Dictionary<string, object>>();
@@ -184,10 +250,23 @@ public class DebugCommandHandler : ICommandHandler
             {
                 try
                 {
+                    // Skip IntPtr properties (common in IL2CPP, not serializable)
+                    if (IsIntPtrType(prop.PropertyType))
+                        continue;
+
                     if (prop.CanRead && prop.GetIndexParameters().Length == 0)
                     {
                         var value = prop.GetValue(component);
-                        properties[prop.Name] = FormatValue(value);
+                        
+                        // Skip if the value itself is IntPtr
+                        if (value != null && IsIntPtrType(value.GetType()))
+                            continue;
+                            
+                        var formattedValue = FormatValue(value);
+                        if (formattedValue != null)
+                        {
+                            properties[prop.Name] = formattedValue;
+                        }
                     }
                 }
                 catch
@@ -211,8 +290,21 @@ public class DebugCommandHandler : ICommandHandler
             {
                 try
                 {
+                    // Skip IntPtr fields (common in IL2CPP, not serializable)
+                    if (IsIntPtrType(field.FieldType))
+                        continue;
+
                     var value = ReflectionHelper.GetFieldValue(component, field.Name);
-                    fields[field.Name] = FormatValue(value);
+                    
+                    // Skip if the value itself is IntPtr
+                    if (value != null && IsIntPtrType(value.GetType()))
+                        continue;
+                        
+                    var formattedValue = FormatValue(value);
+                    if (formattedValue != null)
+                    {
+                        fields[field.Name] = formattedValue;
+                    }
                 }
                 catch
                 {
@@ -229,19 +321,41 @@ public class DebugCommandHandler : ICommandHandler
         return componentData;
     }
 
-    private object FormatValue(object? value)
+    /// <summary>
+    /// Checks if a type is IntPtr or UIntPtr (not serializable and can generally be ignored in IL2CPP).
+    /// </summary>
+    private static bool IsIntPtrType(Type type)
+    {
+        return type == typeof(IntPtr) || type == typeof(UIntPtr);
+    }
+
+    private object? FormatValue(object? value)
     {
         if (value == null)
             return "null";
 
         var type = value.GetType();
+        
+        // Skip IntPtr values - they're not serializable
+        if (IsIntPtrType(type))
+            return null; // Return null to signal this should be skipped
+
         if (type.IsPrimitive || type == typeof(string) || type == typeof(decimal))
             return value;
 
         if (value is UnityEngine.Object unityObj)
             return $"{unityObj.GetType().Name}:{unityObj.name}";
 
-        return value.ToString() ?? "null";
+        // For other types, try to convert to string but be safe
+        try
+        {
+            return value.ToString() ?? "null";
+        }
+        catch
+        {
+            // If ToString() fails, skip this value
+            return null;
+        }
     }
 
     private string GetGameObjectPath(GameObject obj)
@@ -492,6 +606,890 @@ public class DebugCommandHandler : ICommandHandler
                 new { details = ex.Message }
             );
             _responseQueue.EnqueueResponse(errorResponse);
+        }
+    }
+
+    /// <summary>
+    /// Universal component inspection - finds and inspects any component by type name.
+    /// Supports partial type name matching and can inspect from a specific GameObject or NPC ID.
+    /// </summary>
+    private void HandleInspectComponent(Request request)
+    {
+        try
+        {
+            if (request.Params == null || !request.Params.TryGetValue("component_type", out var componentTypeObj))
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32602, // Invalid params
+                    "component_type parameter is required"
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            string componentTypeName = componentTypeObj?.ToString() ?? string.Empty;
+            string? objectName = null;
+            string? npcId = null;
+            
+            if (request.Params.TryGetValue("object_name", out var objectNameObj))
+            {
+                objectName = objectNameObj?.ToString();
+            }
+            
+            if (request.Params.TryGetValue("npc_id", out var npcIdObj))
+            {
+                npcId = npcIdObj?.ToString();
+            }
+
+            int maxDepth = 3;
+            if (request.Params.TryGetValue("max_depth", out var maxDepthObj))
+            {
+                int.TryParse(maxDepthObj?.ToString(), out maxDepth);
+            }
+
+            ModLogger.Debug($"Inspecting component: {componentTypeName} on object: {objectName ?? npcId ?? "any"}");
+
+            Component? component = null;
+            GameObject? gameObject = null;
+
+            // If npc_id is provided, get GameObject from NPC
+            if (!string.IsNullOrEmpty(npcId))
+            {
+                gameObject = GetGameObjectFromNPCId(npcId);
+                if (gameObject == null)
+                {
+                    var errorResponse = ProtocolHandler.CreateErrorResponse(
+                        request.Id,
+                        -32000, // Game error
+                        "NPC not found or has no GameObject",
+                        new { npc_id = npcId }
+                    );
+                    _responseQueue.EnqueueResponse(errorResponse);
+                    return;
+                }
+                objectName = gameObject.name; // Use GameObject name for consistency
+            }
+            // If object_name is provided, find GameObject
+            else if (!string.IsNullOrEmpty(objectName))
+            {
+                gameObject = ReflectionHelper.FindGameObject(objectName);
+                if (gameObject == null)
+                {
+                    var errorResponse = ProtocolHandler.CreateErrorResponse(
+                        request.Id,
+                        -32000, // Game error
+                        "GameObject not found",
+                        new { object_name = objectName }
+                    );
+                    _responseQueue.EnqueueResponse(errorResponse);
+                    return;
+                }
+            }
+
+            // Find component
+            if (gameObject != null)
+            {
+                component = FindComponentByTypeName(gameObject, componentTypeName);
+            }
+            else
+            {
+                // Find first component of this type in the scene
+                component = FindComponentByTypeNameInScene(componentTypeName);
+            }
+
+            if (component == null)
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32000, // Game error
+                    "Component not found",
+                    new { component_type = componentTypeName, object_name = objectName }
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            // Inspect the component with enhanced reflection
+            var result = InspectComponentDeep(component, maxDepth);
+            result["component_type"] = component.GetType().FullName ?? component.GetType().Name;
+            result["game_object"] = component.gameObject.name;
+            result["game_object_path"] = GetGameObjectPath(component.gameObject);
+
+            var response = ProtocolHandler.CreateSuccessResponse(request.Id, result);
+            _responseQueue.EnqueueResponse(response);
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Error($"Error in HandleInspectComponent: {ex.Message}");
+            var errorResponse = ProtocolHandler.CreateErrorResponse(
+                request.Id,
+                -32000, // Game error
+                "Failed to inspect component",
+                new { details = ex.Message, stack_trace = ex.StackTrace }
+            );
+            _responseQueue.EnqueueResponse(errorResponse);
+        }
+    }
+
+    /// <summary>
+    /// Gets a component by type name from a specific GameObject.
+    /// </summary>
+    private void HandleGetComponentByType(Request request)
+    {
+        try
+        {
+            if (request.Params == null || !request.Params.TryGetValue("object_name", out var objectNameObj) ||
+                !request.Params.TryGetValue("component_type", out var componentTypeObj))
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32602, // Invalid params
+                    "object_name and component_type parameters are required"
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            string objectName = objectNameObj?.ToString() ?? string.Empty;
+            string componentTypeName = componentTypeObj?.ToString() ?? string.Empty;
+
+            var gameObject = ReflectionHelper.FindGameObject(objectName);
+            if (gameObject == null)
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32000, // Game error
+                    "GameObject not found",
+                    new { object_name = objectName }
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            var component = FindComponentByTypeName(gameObject, componentTypeName);
+            if (component == null)
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32000, // Game error
+                    "Component not found",
+                    new { component_type = componentTypeName, object_name = objectName }
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            var result = new Dictionary<string, object>
+            {
+                ["component_type"] = component.GetType().FullName ?? component.GetType().Name,
+                ["component_name"] = component.GetType().Name,
+                ["game_object"] = gameObject.name,
+                ["found"] = true
+            };
+
+            var response = ProtocolHandler.CreateSuccessResponse(request.Id, result);
+            _responseQueue.EnqueueResponse(response);
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Error($"Error in HandleGetComponentByType: {ex.Message}");
+            var errorResponse = ProtocolHandler.CreateErrorResponse(
+                request.Id,
+                -32000, // Game error
+                "Failed to get component by type",
+                new { details = ex.Message }
+            );
+            _responseQueue.EnqueueResponse(errorResponse);
+        }
+    }
+
+    /// <summary>
+    /// Gets a member value (property or field) from an object, supporting nested access (e.g., "Dealer.Home.BuildingName").
+    /// </summary>
+    private void HandleGetMemberValue(Request request)
+    {
+        try
+        {
+            if (request.Params == null || !request.Params.TryGetValue("object_name", out var objectNameObj) ||
+                !request.Params.TryGetValue("member_path", out var memberPathObj))
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32602, // Invalid params
+                    "object_name and member_path parameters are required"
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            string objectName = objectNameObj?.ToString() ?? string.Empty;
+            string memberPath = memberPathObj?.ToString() ?? string.Empty;
+            string? componentType = null;
+            string? npcId = null;
+            
+            if (request.Params.TryGetValue("component_type", out var componentTypeObj))
+            {
+                componentType = componentTypeObj?.ToString();
+            }
+            
+            if (request.Params.TryGetValue("npc_id", out var npcIdObj))
+            {
+                npcId = npcIdObj?.ToString();
+            }
+
+            GameObject? gameObject = null;
+            
+            // If npc_id is provided, get GameObject from NPC
+            if (!string.IsNullOrEmpty(npcId))
+            {
+                gameObject = GetGameObjectFromNPCId(npcId);
+                if (gameObject == null)
+                {
+                    var errorResponse = ProtocolHandler.CreateErrorResponse(
+                        request.Id,
+                        -32000, // Game error
+                        "NPC not found or has no GameObject",
+                        new { npc_id = npcId }
+                    );
+                    _responseQueue.EnqueueResponse(errorResponse);
+                    return;
+                }
+                objectName = gameObject.name; // Use GameObject name for consistency
+            }
+            else if (!string.IsNullOrEmpty(objectName))
+            {
+                gameObject = ReflectionHelper.FindGameObject(objectName);
+                if (gameObject == null)
+                {
+                    var errorResponse = ProtocolHandler.CreateErrorResponse(
+                        request.Id,
+                        -32000, // Game error
+                        "GameObject not found",
+                        new { object_name = objectName }
+                    );
+                    _responseQueue.EnqueueResponse(errorResponse);
+                    return;
+                }
+            }
+            else
+            {
+                var errorResponse = ProtocolHandler.CreateErrorResponse(
+                    request.Id,
+                    -32602, // Invalid params
+                    "Either object_name or npc_id parameter is required"
+                );
+                _responseQueue.EnqueueResponse(errorResponse);
+                return;
+            }
+
+            object? targetObject = gameObject;
+            
+            // If component_type is specified, get that component first
+            if (!string.IsNullOrEmpty(componentType))
+            {
+                var component = FindComponentByTypeName(gameObject, componentType);
+                if (component == null)
+                {
+                    var errorResponse = ProtocolHandler.CreateErrorResponse(
+                        request.Id,
+                        -32000, // Game error
+                        "Component not found",
+                        new { component_type = componentType, object_name = objectName }
+                    );
+                    _responseQueue.EnqueueResponse(errorResponse);
+                    return;
+                }
+                targetObject = component;
+            }
+
+            // Navigate the member path (supports nested access like "Dealer.Home.BuildingName")
+            var pathParts = memberPath.Split('.');
+            object? currentValue = targetObject;
+            string currentPath = "";
+
+            foreach (var part in pathParts)
+            {
+                if (currentValue == null)
+                {
+                    var errorResponse = ProtocolHandler.CreateErrorResponse(
+                        request.Id,
+                        -32000, // Game error
+                        $"Null value encountered at path: {currentPath}",
+                        new { member_path = memberPath, current_path = currentPath }
+                    );
+                    _responseQueue.EnqueueResponse(errorResponse);
+                    return;
+                }
+
+                currentPath = string.IsNullOrEmpty(currentPath) ? part : $"{currentPath}.{part}";
+                
+                // Try property first, then field
+                var property = currentValue.GetType().GetProperty(part, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                if (property != null && property.CanRead)
+                {
+                    try
+                    {
+                        currentValue = property.GetValue(currentValue);
+                    }
+                    catch (Exception ex)
+                    {
+                        var errorResponse = ProtocolHandler.CreateErrorResponse(
+                            request.Id,
+                            -32000, // Game error
+                            $"Error reading property '{part}' at path '{currentPath}'",
+                            new { member_path = memberPath, error = ex.Message }
+                        );
+                        _responseQueue.EnqueueResponse(errorResponse);
+                        return;
+                    }
+                }
+                else
+                {
+                    var field = currentValue.GetType().GetField(part, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                    if (field != null)
+                    {
+                        try
+                        {
+                            currentValue = field.GetValue(currentValue);
+                        }
+                        catch (Exception ex)
+                        {
+                            var errorResponse = ProtocolHandler.CreateErrorResponse(
+                                request.Id,
+                                -32000, // Game error
+                                $"Error reading field '{part}' at path '{currentPath}'",
+                                new { member_path = memberPath, error = ex.Message }
+                            );
+                            _responseQueue.EnqueueResponse(errorResponse);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        var errorResponse = ProtocolHandler.CreateErrorResponse(
+                            request.Id,
+                            -32000, // Game error
+                            $"Member '{part}' not found at path '{currentPath}'",
+                            new { member_path = memberPath, current_path = currentPath }
+                        );
+                        _responseQueue.EnqueueResponse(errorResponse);
+                        return;
+                    }
+                }
+            }
+
+            // Format the final value
+            var formattedValue = FormatValueDeep(currentValue, 2);
+
+            var result = new Dictionary<string, object>
+            {
+                ["member_path"] = memberPath,
+                ["value"] = formattedValue,
+                ["value_type"] = currentValue?.GetType().FullName ?? "null",
+                ["object_name"] = objectName,
+                ["component_type"] = componentType ?? "GameObject"
+            };
+
+            var response = ProtocolHandler.CreateSuccessResponse(request.Id, result);
+            _responseQueue.EnqueueResponse(response);
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Error($"Error in HandleGetMemberValue: {ex.Message}");
+            var errorResponse = ProtocolHandler.CreateErrorResponse(
+                request.Id,
+                -32000, // Game error
+                "Failed to get member value",
+                new { details = ex.Message, stack_trace = ex.StackTrace }
+            );
+            _responseQueue.EnqueueResponse(errorResponse);
+        }
+    }
+
+    /// <summary>
+    /// Finds a component by type name (supports partial matching) on a GameObject.
+    /// Uses multiple strategies: direct type resolution, GetComponent<T>, and reflection-based search.
+    /// </summary>
+    private Component? FindComponentByTypeName(GameObject gameObject, string typeName)
+    {
+        if (gameObject == null || string.IsNullOrEmpty(typeName))
+            return null;
+
+        // Strategy 1: Try to resolve the type and use GetComponent<T>
+        try
+        {
+            Type? resolvedType = ResolveComponentType(typeName);
+            if (resolvedType != null && typeof(Component).IsAssignableFrom(resolvedType))
+            {
+                // Use reflection to call GetComponent<T> with the resolved type
+                try
+                {
+                    var getComponentMethod = typeof(GameObject).GetMethods()
+                        .FirstOrDefault(m => m.Name == "GetComponent" && 
+                                            m.IsGenericMethod && 
+                                            m.GetParameters().Length == 0);
+                    
+                    if (getComponentMethod != null)
+                    {
+                        var genericMethod = getComponentMethod.MakeGenericMethod(resolvedType);
+                        var component = genericMethod.Invoke(gameObject, null) as Component;
+                        if (component != null)
+                            return component;
+                    }
+                }
+                catch
+                {
+                    // GetComponent<T> failed, try alternative approach
+                }
+            }
+        }
+        catch
+        {
+            // Type resolution failed, continue to next strategy
+        }
+
+        // Strategy 2: Search all components by name matching (most reliable)
+        Component? bestMatch = null;
+        int bestMatchScore = 0;
+
+        try
+        {
+            var allComponents = gameObject.GetComponents<Component>();
+            foreach (var component in allComponents)
+            {
+                if (component == null) continue;
+
+                var componentType = component.GetType();
+                var fullTypeName = componentType.FullName ?? "";
+                var shortTypeName = componentType.Name;
+                var namespaceName = componentType.Namespace ?? "";
+
+                int matchScore = 0;
+
+                // Exact full name match (highest priority - return immediately)
+                if (string.Equals(fullTypeName, typeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return component;
+                }
+
+                // Exact short name match (high priority)
+                if (string.Equals(shortTypeName, typeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchScore = 100;
+                }
+                // Full name ends with typeName (e.g., "ScheduleOne.NPCs.NPC" matches "NPC")
+                else if (fullTypeName.EndsWith("." + typeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchScore = 90;
+                }
+                // Full name contains (medium priority)
+                else if (fullTypeName.Contains(typeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchScore = 50;
+                }
+                // Short name contains (lower priority)
+                else if (shortTypeName.Contains(typeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchScore = 25;
+                }
+                // Namespace contains (lowest priority)
+                else if (namespaceName.Contains(typeName, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchScore = 10;
+                }
+
+                // Keep track of best match
+                if (matchScore > bestMatchScore)
+                {
+                    bestMatch = component;
+                    bestMatchScore = matchScore;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Debug($"Error searching components on {gameObject.name}: {ex.Message}");
+        }
+
+        return bestMatch;
+    }
+
+    /// <summary>
+    /// Gets a GameObject from an NPC ID by looking up the NPC and accessing its gameObject property.
+    /// </summary>
+    private GameObject? GetGameObjectFromNPCId(string npcId)
+    {
+        try
+        {
+            object? foundNPC = null;
+            
+            // Look up NPC in registry
+            if (S1NPCManager.NPCRegistry != null)
+            {
+                foreach (var npc in S1NPCManager.NPCRegistry)
+                {
+                    if (npc == null) continue;
+                    
+                    // Try to get NPC ID
+                    string currentNpcId = "";
+                    try
+                    {
+                        var idProperty = npc.GetType().GetProperty("ID") ?? 
+                                       npc.GetType().GetProperty("Id") ?? 
+                                       npc.GetType().GetProperty("NPCID");
+                        if (idProperty != null)
+                        {
+                            currentNpcId = idProperty.GetValue(npc)?.ToString() ?? "";
+                        }
+                    }
+                    catch { }
+                    
+                    if (currentNpcId.Equals(npcId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        foundNPC = npc;
+                        break;
+                    }
+                }
+            }
+
+            if (foundNPC == null)
+                return null;
+
+            // Get GameObject from NPC
+            var gameObjectProperty = foundNPC.GetType().GetProperty("gameObject");
+            if (gameObjectProperty != null)
+            {
+                return gameObjectProperty.GetValue(foundNPC) as GameObject;
+            }
+        }
+        catch (Exception ex)
+        {
+            ModLogger.Debug($"Error getting GameObject from NPC ID {npcId}: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves a component type by name, searching through all loaded assemblies.
+    /// </summary>
+    private Type? ResolveComponentType(string typeName)
+    {
+        if (string.IsNullOrEmpty(typeName))
+            return null;
+
+        // Search through all loaded assemblies
+        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            try
+            {
+                // Try exact full name match first
+                var type = assembly.GetType(typeName, false, true);
+                if (type != null && typeof(Component).IsAssignableFrom(type))
+                    return type;
+
+                // Try with case-insensitive search
+                type = assembly.GetType(typeName, false, false);
+                if (type != null && typeof(Component).IsAssignableFrom(type))
+                    return type;
+
+                // Search all types in assembly for partial match
+                try
+                {
+                    var types = assembly.GetTypes();
+                    foreach (var t in types)
+                    {
+                        if (!typeof(Component).IsAssignableFrom(t))
+                            continue;
+
+                        // Check if name matches
+                        if (string.Equals(t.Name, typeName, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(t.FullName, typeName, StringComparison.OrdinalIgnoreCase) ||
+                            (t.FullName != null && t.FullName.Contains(typeName, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            return t;
+                        }
+                    }
+                }
+                catch (ReflectionTypeLoadException)
+                {
+                    // Some types might not be loadable, continue searching
+                }
+            }
+            catch
+            {
+                // Assembly might not be accessible, continue
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds a component by type name in the entire scene.
+    /// </summary>
+    private Component? FindComponentByTypeNameInScene(string typeName)
+    {
+        if (string.IsNullOrEmpty(typeName))
+            return null;
+
+        // Search all GameObjects in the scene
+        var allObjects = ReflectionHelper.FindAllGameObjects();
+        foreach (var gameObject in allObjects)
+        {
+            var component = FindComponentByTypeName(gameObject, typeName);
+            if (component != null)
+                return component;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Enhanced component inspection with deep reflection support.
+    /// </summary>
+    private Dictionary<string, object> InspectComponentDeep(Component component, int maxDepth = 3)
+    {
+        var result = new Dictionary<string, object>
+        {
+            ["type"] = component.GetType().Name,
+            ["full_type"] = component.GetType().FullName ?? "Unknown"
+        };
+
+        // Get all properties (including non-public)
+        var properties = new Dictionary<string, object>();
+        try
+        {
+            var props = component.GetType().GetProperties(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+            
+            foreach (var prop in props)
+            {
+                try
+                {
+                    if (IsIntPtrType(prop.PropertyType))
+                        continue;
+
+                    if (prop.CanRead && prop.GetIndexParameters().Length == 0)
+                    {
+                        var value = prop.GetValue(component);
+                        var formattedValue = FormatValueDeep(value, maxDepth - 1);
+                        if (formattedValue != null)
+                        {
+                            properties[prop.Name] = formattedValue;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    properties[prop.Name] = new Dictionary<string, object>
+                    {
+                        ["error"] = ex.Message,
+                        ["readable"] = false
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            properties["_error"] = ex.Message;
+        }
+        result["properties"] = properties;
+
+        // Get all fields (including non-public)
+        var fields = new Dictionary<string, object>();
+        try
+        {
+            var fieldInfos = component.GetType().GetFields(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+            
+            foreach (var field in fieldInfos)
+            {
+                try
+                {
+                    if (IsIntPtrType(field.FieldType))
+                        continue;
+
+                    var value = ReflectionHelper.GetFieldValue(component, field.Name);
+                    var formattedValue = FormatValueDeep(value, maxDepth - 1);
+                    if (formattedValue != null)
+                    {
+                        fields[field.Name] = formattedValue;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    fields[field.Name] = new Dictionary<string, object>
+                    {
+                        ["error"] = ex.Message,
+                        ["readable"] = false
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            fields["_error"] = ex.Message;
+        }
+        result["fields"] = fields;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Enhanced value formatting that handles arrays, lists, dictionaries, and nested objects.
+    /// </summary>
+    private object? FormatValueDeep(object? value, int remainingDepth)
+    {
+        if (value == null)
+            return "null";
+
+        if (remainingDepth <= 0)
+            return "[max depth reached]";
+
+        var type = value.GetType();
+
+        // Skip IntPtr values
+        if (IsIntPtrType(type))
+            return null;
+
+        // Primitives and strings
+        if (type.IsPrimitive || type == typeof(string) || type == typeof(decimal))
+            return value;
+
+        // Unity Objects
+        if (value is UnityEngine.Object unityObj)
+            return $"{unityObj.GetType().Name}:{unityObj.name}";
+
+        // Arrays
+        if (type.IsArray)
+        {
+            var array = value as Array;
+            if (array != null)
+            {
+                var items = new List<object?>();
+                for (int i = 0; i < Math.Min(array.Length, 50); i++) // Limit to 50 items
+                {
+                    items.Add(FormatValueDeep(array.GetValue(i), remainingDepth - 1));
+                }
+                return new Dictionary<string, object>
+                {
+                    ["type"] = "array",
+                    ["element_type"] = type.GetElementType()?.Name ?? "unknown",
+                    ["length"] = array.Length,
+                    ["items"] = items,
+                    ["truncated"] = array.Length > 50
+                };
+            }
+        }
+
+        // Lists (IList)
+        if (value is System.Collections.IList list)
+        {
+            var items = new List<object?>();
+            for (int i = 0; i < Math.Min(list.Count, 50); i++) // Limit to 50 items
+            {
+                items.Add(FormatValueDeep(list[i], remainingDepth - 1));
+            }
+            return new Dictionary<string, object>
+            {
+                ["type"] = "list",
+                ["count"] = list.Count,
+                ["items"] = items,
+                ["truncated"] = list.Count > 50
+            };
+        }
+
+        // Dictionaries (IDictionary)
+        if (value is System.Collections.IDictionary dict)
+        {
+            var entries = new Dictionary<string, object?>();
+            int count = 0;
+            foreach (System.Collections.DictionaryEntry entry in dict)
+            {
+                if (count >= 50) break; // Limit to 50 entries
+                var keyStr = entry.Key?.ToString() ?? "null";
+                entries[keyStr] = FormatValueDeep(entry.Value, remainingDepth - 1);
+                count++;
+            }
+            return new Dictionary<string, object>
+            {
+                ["type"] = "dictionary",
+                ["count"] = dict.Count,
+                ["entries"] = entries,
+                ["truncated"] = dict.Count > 50
+            };
+        }
+
+        // Enums
+        if (type.IsEnum)
+            return value.ToString();
+
+        // Complex objects - try to extract key properties/fields
+        try
+        {
+            var objData = new Dictionary<string, object>
+            {
+                ["type"] = type.Name,
+                ["full_type"] = type.FullName ?? "Unknown"
+            };
+
+            // Get a few key properties
+            var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+            var keyProps = new Dictionary<string, object?>();
+            int propCount = 0;
+            foreach (var prop in props)
+            {
+                if (propCount >= 10) break; // Limit to 10 properties
+                if (prop.CanRead && prop.GetIndexParameters().Length == 0 && !IsIntPtrType(prop.PropertyType))
+                {
+                    try
+                    {
+                        var propValue = prop.GetValue(value);
+                        keyProps[prop.Name] = FormatValueDeep(propValue, remainingDepth - 1);
+                        propCount++;
+                    }
+                    catch { }
+                }
+            }
+            if (keyProps.Count > 0)
+                objData["properties"] = keyProps;
+
+            // Get a few key fields
+            var fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance);
+            var keyFields = new Dictionary<string, object?>();
+            int fieldCount = 0;
+            foreach (var field in fields)
+            {
+                if (fieldCount >= 10) break; // Limit to 10 fields
+                if (!IsIntPtrType(field.FieldType))
+                {
+                    try
+                    {
+                        var fieldValue = field.GetValue(value);
+                        keyFields[field.Name] = FormatValueDeep(fieldValue, remainingDepth - 1);
+                        fieldCount++;
+                    }
+                    catch { }
+                }
+            }
+            if (keyFields.Count > 0)
+                objData["fields"] = keyFields;
+
+            return objData;
+        }
+        catch
+        {
+            // Fallback to ToString()
+            try
+            {
+                return value.ToString() ?? "null";
+            }
+            catch
+            {
+                return "[unable to format]";
+            }
         }
     }
 }

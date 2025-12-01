@@ -165,6 +165,14 @@ public static class UnityExplorerIntegration
     }
 
     /// <summary>
+    /// Checks if a type is IntPtr or UIntPtr (not serializable and can generally be ignored in IL2CPP).
+    /// </summary>
+    private static bool IsIntPtrType(Type type)
+    {
+        return type == typeof(IntPtr) || type == typeof(UIntPtr);
+    }
+
+    /// <summary>
     /// Inspects an object using ReflectionHelper (fallback when UnityExplorer not available).
     /// </summary>
     private static Dictionary<string, object>? InspectObjectWithReflection(object obj)
@@ -203,9 +211,18 @@ public static class UnityExplorerIntegration
                         {
                             try
                             {
+                                // Skip IntPtr properties (common in IL2CPP, not serializable)
+                                if (IsIntPtrType(prop.PropertyType))
+                                    continue;
+
                                 if (prop.CanRead && prop.GetIndexParameters().Length == 0)
                                 {
                                     var value = prop.GetValue(component);
+                                    
+                                    // Skip if the value itself is IntPtr
+                                    if (value != null && IsIntPtrType(value.GetType()))
+                                        continue;
+                                        
                                     properties[prop.Name] = value?.ToString() ?? "null";
                                 }
                             }

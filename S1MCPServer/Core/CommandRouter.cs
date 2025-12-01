@@ -34,6 +34,7 @@ public class CommandRouter
         _handlers["get_npc"] = new NPCCommandHandler(_responseQueue);
         _handlers["list_npcs"] = new NPCCommandHandler(_responseQueue);
         _handlers["get_npc_position"] = new NPCCommandHandler(_responseQueue);
+        _handlers["inspect_npc_dealer"] = new NPCCommandHandler(_responseQueue);
         _handlers["get_player"] = new PlayerCommandHandler(_responseQueue);
         _handlers["get_player_inventory"] = new PlayerCommandHandler(_responseQueue);
         _handlers["list_items"] = new ItemCommandHandler(_responseQueue);
@@ -54,10 +55,14 @@ public class CommandRouter
         _handlers["get_vehicle"] = new VehicleCommandHandler(_responseQueue);
         
         // Debug handlers (enhanced with UniverseLib and UnityExplorer integration)
-        _handlers["inspect_object"] = new DebugCommandHandler(_responseQueue);
-        _handlers["inspect_type"] = new DebugCommandHandler(_responseQueue);
-        _handlers["find_objects_by_type"] = new DebugCommandHandler(_responseQueue);
-        _handlers["get_scene_objects"] = new DebugCommandHandler(_responseQueue);
+        var debugHandler = new DebugCommandHandler(_responseQueue);
+        _handlers["inspect_object"] = debugHandler;
+        _handlers["inspect_type"] = debugHandler;
+        _handlers["find_objects_by_type"] = debugHandler;
+        _handlers["get_scene_objects"] = debugHandler;
+        _handlers["inspect_component"] = debugHandler;
+        _handlers["get_component_by_type"] = debugHandler;
+        _handlers["get_member_value"] = debugHandler;
 
         ModLogger.Info($"Initialized {_handlers.Count} command handlers");
     }

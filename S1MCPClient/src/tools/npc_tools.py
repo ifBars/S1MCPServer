@@ -105,6 +105,20 @@ def get_npc_tools(tcp_client: TcpClient) -> list[Tool]:
                 },
                 "required": ["npc_id", "health"]
             }
+        ),
+        Tool(
+            name="s1_inspect_npc_dealer",
+            description="Inspect an NPC's dealer component and home building. Useful for debugging dealer home assignment issues.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "npc_id": {
+                        "type": "string",
+                        "description": "The unique identifier of the NPC"
+                    }
+                },
+                "required": ["npc_id"]
+            }
         )
     ]
 
@@ -234,6 +248,31 @@ async def handle_s1_set_npc_health(arguments: Dict[str, Any], tcp_client: TcpCli
         return [TextContent(type="text", text=f"Error: {str(e)}")]
 
 
+async def handle_s1_inspect_npc_dealer(arguments: Dict[str, Any], tcp_client: TcpClient) -> list[TextContent]:
+    """Handle s1_inspect_npc_dealer tool call."""
+    npc_id = arguments.get("npc_id")
+    
+    if not npc_id:
+        return [TextContent(type="text", text="Error: npc_id is required")]
+    
+    try:
+        response = tcp_client.call_with_retry("inspect_npc_dealer", {
+            "npc_id": npc_id
+        })
+        
+        if response.error:
+            return [TextContent(
+                type="text",
+                text=f"Error: {response.error.message} (code: {response.error.code})"
+            )]
+        
+        import json
+        return [TextContent(type="text", text=json.dumps(response.result, indent=2))]
+    except Exception as e:
+        logger.error(f"Error in s1_inspect_npc_dealer: {e}")
+        return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+
 # Tool handler mapping
 TOOL_HANDLERS = {
     "s1_get_npc": handle_s1_get_npc,
@@ -241,5 +280,6 @@ TOOL_HANDLERS = {
     "s1_get_npc_position": handle_s1_get_npc_position,
     "s1_teleport_npc": handle_s1_teleport_npc,
     "s1_set_npc_health": handle_s1_set_npc_health,
+    "s1_inspect_npc_dealer": handle_s1_inspect_npc_dealer,
 }
 
