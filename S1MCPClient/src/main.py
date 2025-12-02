@@ -20,13 +20,46 @@ from .tools import vehicle_tools
 from .tools import game_state_tools
 from .tools import debug_tools
 from .tools import log_tools
+from .tools import game_lifecycle_tools
 
 
 # Global TCP client instance
 tcp_client: TcpClient | None = None
 # Store instructions from handshake
 server_instructions: str | None = None
+# Track connection state
+is_connected: bool = False
 logger = get_logger()
+
+
+# Lifecycle tools that don't require game connection
+LIFECYCLE_TOOLS = {"s1_launch_game", "s1_close_game", "s1_get_game_process_info"}
+
+
+def can_call_tool(tool_name: str) -> tuple[bool, str]:
+    """
+    Check if a tool can be called based on connection state.
+    
+    Args:
+        tool_name: Name of the tool to check
+    
+    Returns:
+        Tuple of (can_call, error_message)
+    """
+    global is_connected
+    
+    # Lifecycle tools can always be called
+    if tool_name in LIFECYCLE_TOOLS:
+        return True, ""
+    
+    # All other tools require game connection
+    if not is_connected:
+        return False, (
+            "Error: Game is not connected. Please launch the game first using s1_launch_game.\n"
+            "Once the game is running and connected, you can use other game tools."
+        )
+    
+    return True, ""
 
 
 def create_server(config: Config, tcp_client: TcpClient) -> Server:
@@ -35,7 +68,7 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
     
     Args:
         config: Configuration instance
-        pipe_client: Named pipe client instance
+        tcp_client: TCP client instance
     
     Returns:
         Configured MCP server
@@ -118,6 +151,15 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
     except Exception as e:
         logger.error(f"Error loading log tools: {e}", exc_info=True)
     
+    # Game lifecycle tools
+    try:
+        tools = game_lifecycle_tools.get_game_lifecycle_tools(tcp_client, config)
+        all_tools.extend(tools)
+        all_tool_handlers.update(game_lifecycle_tools.TOOL_HANDLERS)
+        logger.debug(f"Loaded {len(tools)} game lifecycle tools")
+    except Exception as e:
+        logger.error(f"Error loading game lifecycle tools: {e}", exc_info=True)
+    
     # Log tool collection
     logger.info(f"Collected {len(all_tools)} tools: {[tool.name for tool in all_tools]}")
     logger.info(f"Collected {len(all_tool_handlers)} tool handlers: {list(all_tool_handlers.keys())}")
@@ -163,11 +205,21 @@ def create_server(config: Config, tcp_client: TcpClient) -> Server:
                 text=f"Error: Unknown tool '{name}'. Available tools: {', '.join(all_tool_handlers.keys())}"
             )]
         
+        # Check if tool can be called based on connection state
+        can_call, error_msg = can_call_tool(name)
+        if not can_call:
+            logger.warning(f"Tool {name} called but game not connected")
+            return [TextContent(type="text", text=error_msg)]
+        
         handler = all_tool_handlers[name]
         logger.debug(f"Found handler for {name}, invoking...")
         
         try:
-            result = await handler(arguments, tcp_client)
+            # Game lifecycle tools need config parameter
+            if name.startswith("s1_launch_game") or name.startswith("s1_close_game") or name.startswith("s1_get_game_process_info"):
+                result = await handler(arguments, tcp_client, config)
+            else:
+                result = await handler(arguments, tcp_client)
             logger.debug(f"Tool {name} completed successfully, result type: {type(result)}")
             return result
         except TcpConnectionError as e:
@@ -270,9 +322,10 @@ async def main():
             reconnect_delay=config.reconnect_delay
         )
         
-        # Try to connect (will retry on first use if it fails)
+        # Try to connect (optional - game might not be running yet)
+        global is_connected
         try:
-            logger.debug("Attempting initial connection to mod...")
+            logger.debug("Attempting initial connection to mod (optional)...")
             tcp_client.connect()
             logger.info("Connected to mod successfully")
             
@@ -304,6 +357,9 @@ async def main():
                         logger.info(f"Available methods: {total_methods}")
                         logger.debug(f"Methods: {', '.join(available_methods)}")
                         
+                        # Mark as connected
+                        is_connected = True
+                        
                         # Log method categories if available
                         if "method_categories" in handshake_data:
                             categories = handshake_data["method_categories"]
@@ -322,8 +378,9 @@ async def main():
                 logger.debug(f"Handshake error details: {e}", exc_info=True)
                 
         except TcpConnectionError as e:
-            logger.warning(f"Initial connection failed: {e}. Will retry on first tool call.")
-            logger.debug(f"Connection error details: {e}")
+            logger.info(f"Game not running at startup: {e}")
+            logger.info("MCP server will wait for game to be launched via s1_launch_game tool.")
+            is_connected = False
         
     except Exception as e:
         logger.error(f"Failed to initialize TCP client: {e}")

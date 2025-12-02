@@ -116,12 +116,17 @@ class TcpClient:
             if self._socket is not None:
                 try:
                     self._socket.close()
+                    self.logger.debug("Socket closed successfully")
                 except Exception as e:
                     self.logger.warning(f"Error closing socket: {e}")
                 finally:
                     self._socket = None
                     self._connected = False
                     self.logger.info("Disconnected from TCP server")
+            else:
+                # Still mark as disconnected even if socket is None
+                self._connected = False
+                self.logger.debug("Disconnect called but socket was already None")
     
     def is_connected(self) -> bool:
         """Check if connected to the server."""
@@ -322,8 +327,19 @@ class TcpClient:
                     self.logger.debug(f"Sending acknowledgment for request ID: {request_id}")
                     ack = Acknowledgment(id=request_id, status="received")
                     ack_bytes = self._serialize_acknowledgment(ack)
-                    self._write_message(ack_bytes)
-                    self.logger.debug(f"Acknowledgment sent for request ID: {request_id}")
+                    
+                    # Set a shorter timeout for acknowledgment write
+                    old_timeout = self._socket.gettimeout()
+                    self._socket.settimeout(5.0)
+                    try:
+                        self._write_message(ack_bytes)
+                        self.logger.debug(f"Acknowledgment sent for request ID: {request_id}")
+                    finally:
+                        # Restore original timeout
+                        self._socket.settimeout(old_timeout)
+                except socket.timeout:
+                    self.logger.warning(f"Acknowledgment send timeout for request ID: {request_id}")
+                    # Don't fail the call if ack times out
                 except Exception as e:
                     self.logger.warning(f"Failed to send acknowledgment: {e}")
                     # Don't fail the call if ack fails

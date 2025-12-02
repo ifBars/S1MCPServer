@@ -15,7 +15,12 @@ class Config:
         port: int = 8765,
         log_level: str = "DEBUG",
         connection_timeout: float = 5.0,
-        reconnect_delay: float = 1.0
+        reconnect_delay: float = 1.0,
+        game_il2cpp_path: Optional[str] = None,
+        game_mono_path: Optional[str] = None,
+        game_executable: str = "Schedule I.exe",
+        game_startup_timeout: float = 60.0,
+        game_connection_poll_interval: float = 2.0
     ):
         """
         Initialize configuration.
@@ -26,12 +31,22 @@ class Config:
             log_level: Logging level
             connection_timeout: Connection timeout in seconds
             reconnect_delay: Delay before reconnection attempts in seconds
+            game_il2cpp_path: Path to IL2CPP game directory (optional)
+            game_mono_path: Path to Mono game directory (optional)
+            game_executable: Game executable name
+            game_startup_timeout: Timeout for game startup in seconds
+            game_connection_poll_interval: Interval for connection polling in seconds
         """
         self.host = host
         self.port = port
         self.log_level = log_level
         self.connection_timeout = connection_timeout
         self.reconnect_delay = reconnect_delay
+        self.game_il2cpp_path = game_il2cpp_path
+        self.game_mono_path = game_mono_path
+        self.game_executable = game_executable
+        self.game_startup_timeout = game_startup_timeout
+        self.game_connection_poll_interval = game_connection_poll_interval
     
     @classmethod
     def from_file(cls, config_path: Optional[str] = None) -> "Config":
@@ -64,7 +79,12 @@ class Config:
                 port=int(data.get("port", 8765)),
                 log_level=data.get("log_level", "DEBUG"),
                 connection_timeout=float(data.get("connection_timeout", 5.0)),
-                reconnect_delay=float(data.get("reconnect_delay", 1.0))
+                reconnect_delay=float(data.get("reconnect_delay", 1.0)),
+                game_il2cpp_path=data.get("game_il2cpp_path"),
+                game_mono_path=data.get("game_mono_path"),
+                game_executable=data.get("game_executable", "Schedule I.exe"),
+                game_startup_timeout=float(data.get("game_startup_timeout", 60.0)),
+                game_connection_poll_interval=float(data.get("game_connection_poll_interval", 2.0))
             )
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             # Return default config on error
@@ -80,7 +100,12 @@ class Config:
             "port": self.port,
             "log_level": self.log_level,
             "connection_timeout": self.connection_timeout,
-            "reconnect_delay": self.reconnect_delay
+            "reconnect_delay": self.reconnect_delay,
+            "game_il2cpp_path": self.game_il2cpp_path,
+            "game_mono_path": self.game_mono_path,
+            "game_executable": self.game_executable,
+            "game_startup_timeout": self.game_startup_timeout,
+            "game_connection_poll_interval": self.game_connection_poll_interval
         }
     
     def save(self, config_path: Optional[str] = None) -> None:

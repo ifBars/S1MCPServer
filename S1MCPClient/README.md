@@ -5,22 +5,31 @@ MCP (Model Context Protocol) server for Schedule I game mod integration. This Py
 ## Overview
 
 S1MCPClient is the external MCP server component that:
-- Connects to the S1MCPServer mod via Windows Named Pipes
+- Connects to the S1MCPServer mod via TCP sockets
 - Implements the MCP protocol using the official SDK
 - Exposes game operations as MCP tools for LLM agents
 - Handles JSON-RPC communication with the mod
+- Can launch, monitor, and close the game for full lifecycle testing
 
 ## Architecture
 
 ```
-[LLM Agent] → [S1MCPClient] → [Named Pipe] → [S1MCPServer Mod] → [Schedule I Game]
+[LLM Agent] → [S1MCPClient] → [TCP Socket] → [S1MCPServer Mod] → [Schedule I Game]
+```
+
+The client can also launch and control the game process itself:
+
+```
+[LLM Agent] → [S1MCPClient] ─┬→ [Launch Game Process]
+                              └→ [TCP Connection] → [S1MCPServer Mod] → [Schedule I Game]
 ```
 
 ## Requirements
 
 - Python 3.10 or higher
-- Windows (Named Pipes are Windows-only)
-- S1MCPServer mod installed and running in Schedule I
+- Windows (for game lifecycle management)
+- S1MCPServer mod installed in Schedule I
+- MelonLoader installed in the game (required for mod loading)
 
 ## Installation
 
@@ -32,23 +41,37 @@ S1MCPClient is the external MCP server component that:
 
 ## Configuration
 
-Optional configuration file (`config.json` in project root):
+Configuration file (`config.json` in project root):
 
 ```json
 {
-  "pipe_name": "S1MCPServer",
-  "log_level": "INFO",
+  "host": "localhost",
+  "port": 8765,
+  "log_level": "DEBUG",
   "connection_timeout": 5.0,
-  "reconnect_delay": 1.0
+  "reconnect_delay": 1.0,
+  "game_il2cpp_path": "D:\\Schedule 1 Modding\\Dev Env\\IL2CPP_Version",
+  "game_mono_path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Schedule I",
+  "game_executable": "Schedule I.exe",
+  "game_startup_timeout": 60.0,
+  "game_connection_poll_interval": 2.0
 }
 ```
 
+See `game_config.json.example` for a template configuration file.
+
 ### Configuration Options
 
-- `pipe_name`: Named pipe name to connect to (default: "S1MCPServer")
-- `log_level`: Logging level - DEBUG, INFO, WARNING, ERROR (default: "INFO")
+- `host`: TCP server hostname or IP address (default: "localhost")
+- `port`: TCP server port number (default: 8765)
+- `log_level`: Logging level - DEBUG, INFO, WARNING, ERROR (default: "DEBUG")
 - `connection_timeout`: Connection timeout in seconds (default: 5.0)
 - `reconnect_delay`: Delay before reconnection attempts in seconds (default: 1.0)
+- `game_il2cpp_path`: Path to IL2CPP game installation directory (optional)
+- `game_mono_path`: Path to Mono game installation directory (optional)
+- `game_executable`: Game executable filename (default: "Schedule I.exe")
+- `game_startup_timeout`: Timeout for game startup and connection in seconds (default: 60.0)
+- `game_connection_poll_interval`: Interval between connection attempts in seconds (default: 2.0)
 
 ## Usage
 
@@ -57,6 +80,7 @@ Optional configuration file (`config.json` in project root):
 The server communicates via stdio (standard input/output) as required by the MCP protocol:
 
 ```bash
+cd S1MCPClient
 python -m src.main
 ```
 
@@ -64,6 +88,15 @@ Or if installed as a package:
 
 ```bash
 s1mcpclient
+```
+
+**Important:** Before using game lifecycle tools, configure your game paths in `config.json`:
+
+```json
+{
+  "game_il2cpp_path": "D:\\Path\\To\\IL2CPP\\Game",
+  "game_mono_path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Schedule I"
+}
 ```
 
 ### Integration with MCP Clients
@@ -259,6 +292,136 @@ Inspect a Unity GameObject or component using reflection. Useful for debugging a
 **Parameters:**
 - `object_name` (string, required): The name of the GameObject to inspect
 - `object_type` (string, optional): The type of object to inspect (default: "GameObject")
+
+### Game Lifecycle Tools
+
+The game lifecycle tools enable LLM agents to control the Schedule I game lifecycle - launching, monitoring, and closing the game. This is essential for full mod testing workflows where agents need to:
+- Launch the game with specific settings
+- Test mods in both IL2CPP and Mono versions
+- Reload the game to test mod changes
+- Close the game cleanly after testing
+
+#### `s1_launch_game`
+Launch the Schedule I game with specified version and optional debugging. Automatically waits for the game to start and establishes connection to the mod server.
+
+**Parameters:**
+- `version` (string, required): Game version to launch - `"il2cpp"` or `"mono"`
+- `enable_debugger` (boolean, optional, default: false): Enable MelonLoader debugger (adds `--melonloader.launchdebugger --melonloader.debug` flags)
+- `wait_for_connection` (boolean, optional, default: true): Wait for game to start and automatically connect to the mod server
+
+**Example:**
+```json
+{
+  "version": "il2cpp",
+  "enable_debugger": true,
+  "wait_for_connection": true
+}
+```
+
+**Workflow:**
+1. Validates the game path is configured for the requested version
+2. Checks if game is already running (returns error if so)
+3. Detects game version using `MelonLoader/Il2CppAssemblies` presence
+4. Launches game with optional debug arguments
+5. Waits for game process to appear
+6. If `wait_for_connection=true`: Polls connection every 2 seconds for up to 60 seconds
+7. Performs handshake with mod server
+8. Returns connection status and game info
+
+**Common Use Cases:**
+- Testing IL2CPP version: `{"version": "il2cpp"}`
+- Debugging with Mono: `{"version": "mono", "enable_debugger": true}`
+- Quick launch without waiting: `{"version": "il2cpp", "wait_for_connection": false}`
+
+#### `s1_close_game`
+Forcefully terminate the Schedule I game process. Use this to close the game after testing or before relaunching with different settings.
+
+**Parameters:** None
+
+**Example:**
+```json
+{}
+```
+
+**Workflow:**
+1. Checks if game is running
+2. Disconnects TCP client
+3. Executes `taskkill /F /IM "Schedule I.exe"`
+4. Waits briefly to confirm termination
+5. Returns success/failure status
+
+**Common Use Cases:**
+- Clean shutdown after testing: Call before launching with new settings
+- Automated test cleanup: Ensure clean state between test runs
+- Force close if game is unresponsive
+
+#### `s1_get_game_process_info`
+Check if the Schedule I game is currently running and get detailed process information.
+
+**Parameters:** None
+
+**Example:**
+```json
+{}
+```
+
+**Returns:**
+```json
+{
+  "running": true,
+  "process_count": 1,
+  "processes": [
+    {
+      "pid": 12345,
+      "cpu_time": 45.2,
+      "memory_mb": 1024.5,
+      "start_time": "2024-01-15T10:30:00"
+    }
+  ]
+}
+```
+
+**Common Use Cases:**
+- Verify game is running before attempting connection
+- Monitor game resource usage during testing
+- Check for multiple game instances
+- Get game PID for manual debugging
+
+### Game Lifecycle Example Workflow
+
+Full mod testing workflow using game lifecycle tools:
+
+```python
+# 1. Check if game is running
+response = await call_tool("s1_get_game_process_info", {})
+# If running, close it
+if response["running"]:
+    await call_tool("s1_close_game", {})
+
+# 2. Launch IL2CPP version with debugger
+response = await call_tool("s1_launch_game", {
+    "version": "il2cpp",
+    "enable_debugger": True,
+    "wait_for_connection": True
+})
+
+# 3. Run tests...
+# Test your mod functionality here
+
+# 4. Close game
+await call_tool("s1_close_game", {})
+
+# 5. Launch Mono version for comparison testing
+response = await call_tool("s1_launch_game", {
+    "version": "mono",
+    "enable_debugger": False,
+    "wait_for_connection": True
+})
+
+# 6. Run tests on Mono version...
+
+# 7. Close game when done
+await call_tool("s1_close_game", {})
 
 ## Protocol
 
